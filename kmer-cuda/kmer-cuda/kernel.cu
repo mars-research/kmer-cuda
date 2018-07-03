@@ -99,73 +99,168 @@ unsigned long genrand_int32(void)
 #define BIG_CONSTANT(x) (x##LLU)
 cudaError_t addWithCuda(int *c, const int *a, const int *b, unsigned int size);
 struct KMer {
-	char arr[50];
-	char padding[14];
+	char arr[25];
+	char padding[7];
 };
 struct HTEntry {
 	union {
-		KMer kmer;
+		KMer sto;
 		struct {
-			char padding[56];
+			unsigned char padding[26];
+			unsigned short dist;
 			unsigned int count;
-			unsigned int offset;
+			unsigned long long h2;
+			
+
 		};
 	};
 };
 
 
 #define LOG_SZ 24
-#define TBL_SZ 1llu<<LOG_SZ
+#define TBL_SZ (1llu<<LOG_SZ)
 #define LOG_BATCH_SZ 24
-#define BATCH_SZ 1llu<<LOG_BATCH_SZ
-__device__   unsigned long long fibonacci_mix(unsigned long long hash) {
-	return (hash * 11400714819323198485llu) >> (64 - LOG_SZ);
+#define BATCH_SZ (1llu<<LOG_BATCH_SZ)
+
+#define BIG_PRIME_1 50120398274937569llu 
+#define BIG_PRIME_2 46774526020399987llu
+#define BIG_PRIME_3 6731754961944698579llu 
+
+struct hash128 {
+	unsigned long long h1, h2;
+};
+__device__ __forceinline__ unsigned long long rotl64(unsigned long long x, unsigned long long r)
+{
+	return (x << r) | (x >> (64 - r));
+}
+#define ROTL64(x,y)	rotl64(x,y)
+#define getblock(p, i) (p[i])
+__device__ __forceinline__ unsigned long long fmix64(unsigned long long k)
+{
+	k ^= k >> 33;
+	k *= BIG_CONSTANT(0xff51afd7ed558ccd);
+	k ^= k >> 33;
+	k *= BIG_CONSTANT(0xc4ceb9fe1a85ec53);
+	k ^= k >> 33;
+
+	return k;
+}
+__device__ __forceinline__ void MurmurHash3_x64_128(const void * key,
+	const unsigned int seed, void * out)
+{
+
+	const unsigned char * data = (const unsigned char*)key;
+	const int nblocks = 25 / 16;
+	int i;
+
+	unsigned long long h1 = seed;
+	unsigned long long h2 = seed;
+
+	unsigned long long c1 = (0x87c37b91114253d5llu);
+	unsigned long long c2 = (0x4cf5ad432745937fllu);
+
+	//----------
+	// body
+
+	const unsigned long long * blocks = (const unsigned long long *)(data);
+
+
+	{
+		unsigned long long k1 = blocks[0];
+		unsigned long long k2 = blocks[1];
+
+		k1 *= c1; k1 = ROTL64(k1, 31); k1 *= c2; h1 ^= k1;
+
+		h1 = ROTL64(h1, 27); h1 += h2; h1 = h1 * 5 + 0x52dce729;
+
+		k2 *= c2; k2 = ROTL64(k2, 33); k2 *= c1; h2 ^= k2;
+
+		h2 = ROTL64(h2, 31); h2 += h1; h2 = h2 * 5 + 0x38495ab5;
+	}
+	//----------
+	// tail
+
+	const unsigned char * tail = (const unsigned char*)(data + nblocks * 16);
+
+	unsigned long long k1 = 0;
+	unsigned long long k2 = 0;
+
+	{
+		k2 ^= (unsigned long long)(tail[9]) << 8;
+		k2 ^= (unsigned long long)(tail[8]) << 0;
+		k2 *= c2; k2 = ROTL64(k2, 33); k2 *= c1; h2 ^= k2;
+
+		k1 ^= (unsigned long long)(tail[7]) << 56;
+		k1 ^= (unsigned long long)(tail[6]) << 48;
+		k1 ^= (unsigned long long)(tail[5]) << 40;
+		k1 ^= (unsigned long long)(tail[4]) << 32;
+		k1 ^= (unsigned long long)(tail[3]) << 24;
+		k1 ^= (unsigned long long)(tail[2]) << 16;
+		k1 ^= (unsigned long long)(tail[1]) << 8;
+		k1 ^= (unsigned long long)(tail[0]) << 0;
+		k1 *= c1; k1 = ROTL64(k1, 31); k1 *= c2; h1 ^= k1;
+	};
+
+	//----------
+	// finalization
+
+	h1 ^= 25; h2 ^= 25;
+
+	h1 += h2;
+	h2 += h1;
+
+	h1 = fmix64(h1);
+	h2 = fmix64(h2);
+
+	h1 += h2;
+	h2 += h1;
+
+	((unsigned long long*)out)[0] = h1;
+	((unsigned long long*)out)[1] = h2;
 }
 
-__device__   unsigned long long hash_kmer(KMer * km) {
-	unsigned long long * characs = (unsigned long long *)km->arr;
-	unsigned long long hash = fibonacci_mix(characs[0]) ^ fibonacci_mix(characs[1]) ^ fibonacci_mix(characs[2]) ^ fibonacci_mix(characs[3]) ^ fibonacci_mix(characs[4]) ^ fibonacci_mix(characs[5]) ^ fibonacci_mix(characs[6]) ^ fibonacci_mix(characs[7]);
-	return (hash);
-
-}
 #define min(a,b) a<b?a:b
 #define max(a,b) a>b?a:b
-__device__  bool kmer_cmp(KMer * o1, KMer * o2) {
-	unsigned long long *a1 = (unsigned long long *)o1->arr, *a2 = (unsigned long long *)o2->arr;
-	if (*a1 != *a2) return false;
-	*a1++;
-	*a2++;
-	if (*a1 != *a2) return false;
-	*a1++;
-	*a2++;
-	if (*a1 != *a2) return false;
-	*a1++;
-	*a2++;
-	if (*a1 != *a2) return false;
-	*a1++;
-	*a2++;
-	if (*a1 != *a2) return false;
-	*a1++;
-	*a2++;
-	if (*a1 != *a2) return false;
-	*a1++;
-	*a2++;
-	if (*a1 != *a2) return false;
-	return true;
-}
-__global__ void histoKernel(KMer* ptr, HTEntry * tbl) {
-	KMer * ind = &(ptr[(threadIdx.x*gridDim.x*gridDim.y + blockIdx.y*gridDim.x + blockIdx.x)]);
-	auto index = hash_kmer(ind);
-	auto orig = index;
-	bool bval = false;
-	//atomicAdd(counter, index);
-	while ((bval = (atomicInc(&(tbl[index].count), 0) != 0)) && !kmer_cmp(&(tbl[index].kmer), ind)) {
-		index += orig*orig;
-		index %= TBL_SZ;
-		if (index == orig) { break; }
+// generate random data
+#define RATIO 2llu
+KMer * generate_data() {
+	auto my_data = (KMer *)malloc(sizeof(KMer) * BATCH_SZ);
+	memset((void*)my_data, 0, sizeof(KMer) * BATCH_SZ);
+	auto sz = BATCH_SZ / RATIO;
+	for (unsigned long i = 0; i < sz* sizeof(KMer) / sizeof(unsigned long); i++) {
+			((unsigned long *)((my_data)))[i] = i*i;
 	}
-	if (!bval) atomicAdd(&(tbl[index].count), 1);
-	else { tbl[index].kmer = *ind; }
+	for (auto i = 1; i < RATIO;i++) {
+		memcpy(&(my_data[0]), &(my_data[sz*i]), sz * sizeof(KMer));
+	}
+	return my_data;
+}
+__device__ __forceinline__ bool kmer_cmp(KMer * o1, KMer * o2) {
+	for (auto  i = 0; i < 3; i++)if (((unsigned long long *)o1->arr)[i] != ((unsigned long long *)o2->arr)[i]) return false;
+	return o1->arr[24]==o2->arr[24];
+}
+__global__ void histoKernel(KMer* ptr, HTEntry * tbl, unsigned long long * res) {
+	KMer * ind = &(ptr[(threadIdx.x*gridDim.x*gridDim.y + blockIdx.y*gridDim.x + blockIdx.x)]);
+	unsigned long long hashes[2];
+	MurmurHash3_x64_128(ind->arr, BIG_PRIME_3, &hashes);
+	auto index = hashes[0]>>(64-LOG_SZ);
+	atomicAdd(res,1);
+	auto h2 = hashes[1];
+	auto orig = index;
+	auto bval  = atomicCAS(&(tbl[index].count), 0ul, 1ul);
+	do {
+		while (!(bval == 0 || tbl[index].h2 == h2)) {
+
+			index += 1;
+			index %= TBL_SZ;
+			if (index == orig) { return; }
+			bval = atomicCAS(&(tbl[index].count), 0ul, 1ul);
+		}
+		
+	} while (!bval&&!kmer_cmp(ind, &(tbl[index].sto)));
+	if (bval==0) {  tbl[index].h2 = h2;  memcpy(tbl[index].sto.arr, ind, 25); }
+	else { atomicAdd(res, -1); atomicAdd(&(tbl[index].count), 1); }
+	
 }
 #define CUDA_CALL(x) do { if((x) != cudaSuccess) { \
     printf("Error at %s:%d\n",__FILE__,__LINE__); \
@@ -184,21 +279,15 @@ HTEntry * histoCuda(char * filename)
 	cudaSetDevice(0);
 	cudaDeviceSetCacheConfig(cudaFuncCachePreferL1);
 	cudaMalloc((void**)&dev_data, sizeof(KMer) *BATCH_SZ);
-	my_data = (KMer *)malloc(sizeof(KMer) * BATCH_SZ);
+	my_data = generate_data();
 
-	memset((void*)my_data, 0, sizeof(KMer) * BATCH_SZ);
-	unsigned long * a = (unsigned long *)my_data;
-	for (unsigned long i = 0; i < sizeof(KMer)*(BATCH_SZ) / 4; i++) {
-		a[i] = i*i;
-	}
 	cudaMemcpy(dev_data, my_data, sizeof(KMer) * BATCH_SZ, cudaMemcpyHostToDevice);
-	if (cudaStatus != cudaSuccess) {
-
-		printf("cm0 fail %s\n", cudaGetErrorString(cudaStatus));
-
-	}
 	cudaStatus = cudaMalloc((void**)&tbl, sizeof(HTEntry)*TBL_SZ);
-	cudaMemset((void*)tbl, 0, sizeof(HTEntry) * TBL_SZ);
+	cudaMemset(tbl, 0, sizeof(HTEntry) * TBL_SZ);
+	unsigned long long * temp;
+	cudaMalloc((void**)&temp, 8);
+	cudaMemset(temp, 0, 8);
+	cudaMemset(dev_data, 0, sizeof(KMer) * BATCH_SZ);
 	if (cudaStatus != cudaSuccess) {
 
 		printf("cm01 fail %s\n", cudaGetErrorString(cudaStatus));
@@ -210,15 +299,18 @@ HTEntry * histoCuda(char * filename)
 	unsigned long long t1, t2, freq;
 	QueryPerformanceFrequency((LARGE_INTEGER*)&freq);
 	QueryPerformanceCounter((LARGE_INTEGER*)&t1);
-	histoKernel << <griddims, 128 >> > (dev_data, tbl);
+	histoKernel <<<griddims, 128 >>> (dev_data, tbl, temp);
 
 	CUDA_CALL(cudaGetLastError());
 	CUDA_CALL(cudaDeviceSynchronize());
 	QueryPerformanceCounter((LARGE_INTEGER*)&t2);
+	
+	unsigned long long col;
+	cudaMemcpy(&col, temp, 8, cudaMemcpyDeviceToHost);
 	double xr = t2 - t1;
 	double y = freq;
 	double z = xr / y;
-	printf("done with CUDA, time taken, freq: %lf, %lf\n", z, y);
+	printf("done with CUDA, time taken, freq, collisions: %lf, %lf, %llu\n", z, y,col);
 	cudaFree(dev_data);
 	cudaFree(tbl);
 
